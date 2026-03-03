@@ -1,24 +1,30 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
     routing::{get, post},
     Router,
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     http::{header, Response, StatusCode},
     body::Body,
 };
-use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tokio::sync::RwLock;
 
 use r3_ui::config::Settings;
 use r3_ui::db::init_db;
 use r3_ui::handlers::{auth, inbound, setting, xray as xray_handler, pages, subscription};
 use r3_ui::services::xray::XrayManager;
+use r3_ui::services::system::SystemMonitor;
 use r3_ui::websocket::hub::WsHub;
 use r3_ui::websocket::handler as ws_handler;
+use r3_ui::bot::{TelegramBot, BotConfig, NotificationService};
+use r3_ui::bot::backup::BackupService;
 use r3_ui::AppState;
+use r3_ui::XrayProcessState;
 use r3_ui::services::i18n::init_i18n;
 
 #[tokio::main]
@@ -53,15 +59,59 @@ async fn main() -> anyhow::Result<()> {
     let xray = Arc::new(XrayManager::new(settings.xray_binary.clone(), settings.xray_config.clone()));
     tracing::info!("Xray manager initialized");
 
+    // Initialize system monitor
+    let system_monitor = Arc::new(SystemMonitor::new());
+    tracing::info!("System monitor initialized");
+
     // Initialize WebSocket hub
     let ws_hub = Arc::new(WsHub::new());
+    tracing::info!("WebSocket hub initialized");
+
+    // Initialize notification service
+    let notification_service = Arc::new(NotificationService::new());
+    tracing::info!("Notification service initialized");
+
+    // Initialize Telegram bot if configured
+    let telegram_bot: Arc<RwLock<Option<TelegramBot>>> = if settings.tg_enable && !settings.tg_bot_token.is_empty() {
+        let bot_config = BotConfig {
+            enabled: true,
+            token: settings.tg_bot_token.clone(),
+            chat_id: settings.tg_chat_id,
+            admin_ids: vec![],
+            notify_on_traffic_limit: true,
+            notify_on_expiry: true,
+            notify_on_login: false,
+        };
+        Arc::new(RwLock::new(Some(TelegramBot::new(bot_config))))
+    } else {
+        Arc::new(RwLock::new(None))
+    };
+    tracing::info!("Telegram bot configured: {}", telegram_bot.read().await.is_some());
+
+    // Initialize backup service
+    let backup_service: Arc<RwLock<Option<BackupService>>> = Arc::new(RwLock::new(Some(BackupService::new(
+        r3_ui::bot::backup::BackupConfig {
+            enabled: settings.backup_to_tg,
+            backup_path: settings.backup_path.clone(),
+            cron_schedule: settings.backup_cron.clone(),
+            keep_count: 7,
+            send_to_telegram: settings.backup_to_tg,
+        },
+        PathBuf::from(settings.database_url.clone().strip_prefix("sqlite:").unwrap_or(&settings.database_url)),
+    ))));
+    tracing::info!("Backup service initialized");
 
     // Create app state
     let state = AppState {
         db,
         settings: Arc::new(settings),
         xray,
+        system_monitor,
         ws_hub,
+        xray_process: Arc::new(RwLock::new(XrayProcessState::default())),
+        telegram_bot,
+        notification_service,
+        backup_service,
     };
 
     // Setup session store

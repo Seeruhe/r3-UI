@@ -75,6 +75,36 @@ time = "0.3"
 # MIME 类型
 mime_guess = "2"
 
+# Telegram Bot
+teloxide = { version = "0.13", features = ["macros"] }
+
+# 2FA 认证
+totp-lite = "2"
+qrcode = "0.14"
+image = "0.25"
+
+# 系统监控
+sysinfo = "0.33"
+
+# LDAP
+ldap3 = "0.11"
+
+# HTTP客户端 (用于下载Xray)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# 压缩
+zip = "2"
+
+# 异步同步原语
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+
+# 正则表达式
+regex = "1"
+
+# URL 编码
+urlencoding = "2"
+
 [profile.release]
 lto = true
 codegen-units = 1

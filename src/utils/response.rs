@@ -36,6 +36,18 @@ impl<T> ApiResponse<T> {
             message: Some(message.to_string()),
         }
     }
+
+    /// Create an error response with a message
+    pub fn error(message: &str) -> Self
+    where
+        T: Default,
+    {
+        Self {
+            success: false,
+            data: Some(T::default()),
+            message: Some(message.to_string()),
+        }
+    }
 }
 
 impl ApiResponse<()> {

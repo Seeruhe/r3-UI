@@ -229,3 +229,113 @@ pub async fn get_default_config(
 
     Ok(Json(ApiResponse::success(default_config)))
 }
+
+// ============================================================================
+// Xray Version Management Handlers
+// ============================================================================
+
+use crate::services::xray::{XrayRelease, XrayVersion};
+
+/// Get available Xray versions from GitHub
+pub async fn get_available_versions(
+    State(state): State<AppState>,
+    session: Session,
+) -> Result<Json<ApiResponse<Vec<XrayRelease>>>, StatusCode> {
+    let user_id: Option<i64> = session.get(SESSION_USER_KEY)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if user_id.is_none() {
+        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+    }
+
+    match state.xray.get_available_versions().await {
+        Ok(versions) => Ok(Json(ApiResponse::success(versions))),
+        Err(e) => {
+            tracing::error!("Failed to fetch Xray versions: {}", e);
+            Ok(Json(ApiResponse::error(&format!("Failed to fetch versions: {}", e))))
+        }
+    }
+}
+
+/// Install a specific Xray version
+pub async fn install_version(
+    State(state): State<AppState>,
+    Path(version): Path<String>,
+    session: Session,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let user_id: Option<i64> = session.get(SESSION_USER_KEY)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if user_id.is_none() {
+        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+    }
+
+    // Ensure version starts with 'v'
+    let version = if version.starts_with('v') {
+        version
+    } else {
+        format!("v{}", version)
+    };
+
+    tracing::info!("Installing Xray version: {}", version);
+
+    match state.xray.install_version(&version).await {
+        Ok(_) => Ok(Json(ApiResponse::success(format!(
+            "Xray {} installed successfully",
+            version
+        )))),
+        Err(e) => {
+            tracing::error!("Failed to install Xray {}: {}", version, e);
+            Ok(Json(ApiResponse::error(&format!("Installation failed: {}", e))))
+        }
+    }
+}
+
+/// Get current installed version info
+pub async fn get_installed_version(
+    State(state): State<AppState>,
+    session: Session,
+) -> Result<Json<ApiResponse<XrayVersion>>, StatusCode> {
+    let user_id: Option<i64> = session.get(SESSION_USER_KEY)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if user_id.is_none() {
+        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+    }
+
+    let version = state.xray.get_installed_version().await.unwrap_or_else(|| "Unknown".to_string());
+    let binary_path = state.xray.get_binary_path();
+    let _config_path = state.xray.get_config_path();
+
+    Ok(Json(ApiResponse::success(XrayVersion {
+        version,
+        arch: std::env::consts::ARCH.to_string(),
+        os: std::env::consts::OS.to_string(),
+        download_url: String::new(),
+        file_name: binary_path.to_string_lossy().to_string(),
+    })))
+}
+
+/// Start Xray
+pub async fn start(
+    State(state): State<AppState>,
+    session: Session,
+) -> Result<Json<ApiResponse<()>>, StatusCode> {
+    let user_id: Option<i64> = session.get(SESSION_USER_KEY)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if user_id.is_none() {
+        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+    }
+
+    if let Err(e) = state.xray.start().await {
+        tracing::error!("Failed to start Xray: {}", e);
+        return Ok(Json(ApiResponse::success_msg("Failed to start Xray")));
+    }
+
+    Ok(Json(ApiResponse::success(())))
+}

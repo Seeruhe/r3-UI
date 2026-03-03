@@ -32,9 +32,36 @@ pub struct InboundConfig {
     pub sniffing: SniffingConfig,
 }
 
+/// Xray version information
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct XrayVersion {
+    pub version: String,
+    pub arch: String,
+    pub os: String,
+    pub download_url: String,
+    pub file_name: String,
+}
+
+/// Available Xray releases from GitHub
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XrayRelease {
+    pub tag_name: String,
+    pub name: String,
+    pub assets: Vec<XrayAsset>,
+    pub published_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XrayAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    pub size: u64,
+}
+
 pub struct XrayManager {
     binary_path: PathBuf,
     config_path: PathBuf,
+    assets_path: PathBuf,
     process: Arc<RwLock<Option<Child>>>,
     running: Arc<AtomicBool>,
     pid: Arc<AtomicU32>,
@@ -44,9 +71,28 @@ pub struct XrayManager {
 
 impl XrayManager {
     pub fn new(binary_path: PathBuf, config_path: PathBuf) -> Self {
+        let assets_path = binary_path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/usr/share/xray"));
+
         Self {
             binary_path,
             config_path,
+            assets_path,
+            process: Arc::new(RwLock::new(None)),
+            running: Arc::new(AtomicBool::new(false)),
+            pid: Arc::new(AtomicU32::new(0)),
+            logs: Arc::new(RwLock::new(Vec::new())),
+            start_time: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Create manager with explicit assets path
+    pub fn with_assets_path(binary_path: PathBuf, config_path: PathBuf, assets_path: PathBuf) -> Self {
+        Self {
+            binary_path,
+            config_path,
+            assets_path,
             process: Arc::new(RwLock::new(None)),
             running: Arc::new(AtomicBool::new(false)),
             pid: Arc::new(AtomicU32::new(0)),
@@ -222,6 +268,206 @@ impl XrayManager {
         tokio::fs::write(&self.config_path, config_str).await?;
         tracing::info!("Generated Xray config at {:?}", self.config_path);
         Ok(())
+    }
+
+    // ========================================================================
+    // Xray Version Management
+    // ========================================================================
+
+    /// Get list of available Xray versions from GitHub releases
+    pub async fn get_available_versions(&self) -> anyhow::Result<Vec<XrayRelease>> {
+        let client = reqwest::Client::builder()
+            .user_agent("r3-UI/1.0")
+            .build()?;
+
+        let response = client
+            .get("https://api.github.com/repos/XTLS/Xray-core/releases")
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to fetch releases: {}", response.status()));
+        }
+
+        let releases: Vec<serde_json::Value> = response.json().await?;
+
+        let result: Vec<XrayRelease> = releases
+            .iter()
+            .take(20) // Only show last 20 releases
+            .filter_map(|r| {
+                let tag_name = r.get("tag_name")?.as_str()?.to_string();
+                let name = r.get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(&tag_name)
+                    .to_string();
+                let published_at = r.get("published_at")?.as_str()?.to_string();
+
+                let assets = r.get("assets")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|a| {
+                        Some(XrayAsset {
+                            name: a.get("name")?.as_str()?.to_string(),
+                            browser_download_url: a.get("browser_download_url")?.as_str()?.to_string(),
+                            size: a.get("size")?.as_u64()?,
+                        })
+                    })
+                    .collect();
+
+                Some(XrayRelease {
+                    tag_name,
+                    name,
+                    assets,
+                    published_at,
+                })
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    /// Download and install a specific Xray version
+    pub async fn install_version(&self, version: &str) -> anyhow::Result<()> {
+        // Stop xray first
+        self.stop().await?;
+
+        // Determine platform
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+
+        let arch_str = match arch {
+            "x86_64" | "x64" => "64",
+            "aarch64" | "arm64" => "arm64-v8a",
+            "arm" => "arm32-v7a",
+            _ => return Err(anyhow::anyhow!("Unsupported architecture: {}", arch)),
+        };
+
+        let os_str = match os {
+            "linux" => "linux",
+            "windows" => "windows",
+            "macos" => "macos",
+            "freebsd" => "freebsd",
+            _ => return Err(anyhow::anyhow!("Unsupported OS: {}", os)),
+        };
+
+        let file_name = format!("Xray-{}-{}.zip", os_str, arch_str);
+        let download_url = format!(
+            "https://github.com/XTLS/Xray-core/releases/download/{}/{}",
+            version, file_name
+        );
+
+        tracing::info!("Downloading Xray {} from {}", version, download_url);
+
+        // Download file
+        let client = reqwest::Client::new();
+        let response = client.get(&download_url).send().await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to download: {}", response.status()));
+        }
+
+        let bytes = response.bytes().await?;
+
+        // Create temp directory for extraction
+        let temp_dir = std::env::temp_dir().join("xray-update");
+        tokio::fs::create_dir_all(&temp_dir).await?;
+
+        let zip_path = temp_dir.join(&file_name);
+        tokio::fs::write(&zip_path, &bytes).await?;
+
+        tracing::info!("Extracting Xray...");
+
+        // Extract zip
+        self.extract_zip(&zip_path, &temp_dir).await?;
+
+        // Find extracted binary
+        let extracted_binary = temp_dir.join("xray");
+        if !extracted_binary.exists() {
+            return Err(anyhow::anyhow!("Extracted binary not found"));
+        }
+
+        // Backup old binary
+        let backup_path = self.binary_path.with_extension("bak");
+        if self.binary_path.exists() {
+            tokio::fs::copy(&self.binary_path, &backup_path).await?;
+        }
+
+        // Replace binary
+        tokio::fs::copy(&extracted_binary, &self.binary_path).await?;
+
+        // Make executable on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&self.binary_path, std::fs::Permissions::from_mode(0o755)).await?;
+        }
+
+        // Cleanup
+        tokio::fs::remove_dir_all(&temp_dir).await.ok();
+
+        tracing::info!("Xray {} installed successfully", version);
+
+        // Start xray again
+        self.start().await?;
+
+        Ok(())
+    }
+
+    /// Extract a zip file
+    async fn extract_zip(&self, zip_path: &PathBuf, dest_dir: &PathBuf) -> anyhow::Result<()> {
+        let file = std::fs::File::open(zip_path)?;
+        let mut archive = zip::ZipArchive::new(file)?;
+
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let outpath = match file.enclosed_name() {
+                Some(path) => dest_dir.join(path),
+                None => continue,
+            };
+
+            if file.name().ends_with('/') {
+                tokio::fs::create_dir_all(&outpath).await?;
+            } else {
+                if let Some(p) = outpath.parent() {
+                    if !p.exists() {
+                        tokio::fs::create_dir_all(p).await?;
+                    }
+                }
+                let mut outfile = std::fs::File::create(&outpath)?;
+                std::io::copy(&mut file, &mut outfile)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if Xray binary exists
+    pub fn binary_exists(&self) -> bool {
+        self.binary_path.exists()
+    }
+
+    /// Get current installed version
+    pub async fn get_installed_version(&self) -> Option<String> {
+        if !self.binary_exists() {
+            return None;
+        }
+
+        self.get_version_internal().await.ok()
+    }
+
+    /// Get Xray binary path
+    pub fn get_binary_path(&self) -> &PathBuf {
+        &self.binary_path
+    }
+
+    /// Get Xray config path
+    pub fn get_config_path(&self) -> &PathBuf {
+        &self.config_path
+    }
+
+    /// Get Xray assets path
+    pub fn get_assets_path(&self) -> &PathBuf {
+        &self.assets_path
     }
 }
 

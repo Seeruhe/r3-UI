@@ -151,7 +151,7 @@ impl I18n {
     }
 
     /// Get a translation synchronously (for template rendering)
-    pub fn t_sync(&self, key: &str, lang: &str) -> String {
+    pub fn t_sync(&self, key: &str, _lang: &str) -> String {
         // This is a synchronous version that requires pre-loaded translations
         // Used in template rendering where we can't use async
         key.to_string()

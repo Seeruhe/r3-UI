@@ -8,7 +8,8 @@ pub mod services;
 pub mod utils;
 pub mod websocket;
 pub mod xray;
+pub mod bot;
 
 mod app_state;
 
-pub use app_state::AppState;
+pub use app_state::{AppState, XrayProcessState};

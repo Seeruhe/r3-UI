@@ -20,7 +20,12 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            secret TEXT DEFAULT '',
+            tfa_enabled INTEGER DEFAULT 0,
+            tg_id INTEGER DEFAULT 0,
+            created_at INTEGER DEFAULT 0,
+            last_login INTEGER DEFAULT 0
         )
         "#,
     )
@@ -95,12 +100,38 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     if admin_exists.0 == 0 {
         // Default password: admin (hashed with argon2)
         let hashed_password = hash_password("admin")?;
-        sqlx::query("INSERT INTO users (username, password) VALUES (?, ?)")
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO users (username, password, secret, tfa_enabled, tg_id, created_at, last_login) VALUES (?, ?, '', 0, 0, ?, ?)")
             .bind("admin")
             .bind(&hashed_password)
+            .bind(now)
+            .bind(now)
             .execute(pool)
             .await?;
         tracing::info!("Created default admin user (password: admin)");
+    }
+
+    // Add missing columns to existing users table (migration for existing databases)
+    let columns = [
+        ("secret", "TEXT DEFAULT ''"),
+        ("tfa_enabled", "INTEGER DEFAULT 0"),
+        ("tg_id", "INTEGER DEFAULT 0"),
+        ("created_at", "INTEGER DEFAULT 0"),
+        ("last_login", "INTEGER DEFAULT 0"),
+    ];
+
+    for (col_name, col_type) in columns {
+        let result = sqlx::query(&format!(
+            "ALTER TABLE users ADD COLUMN {} {}",
+            col_name, col_type
+        ))
+        .execute(pool)
+        .await;
+
+        // Ignore error if column already exists
+        if let Err(e) = result {
+            tracing::debug!("Column {} might already exist: {}", col_name, e);
+        }
     }
 
     tracing::info!("Database migrations completed");

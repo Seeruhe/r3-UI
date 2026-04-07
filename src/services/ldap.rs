@@ -9,6 +9,7 @@ pub struct LdapConfig {
     pub enabled: bool,
     pub url: String,
     pub bind_dn: String,
+    #[serde(skip_serializing)]
     pub bind_password: String,
     pub base_dn: String,
     pub filter: String,

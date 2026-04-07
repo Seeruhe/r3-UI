@@ -36,7 +36,7 @@ pub async fn all(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let settings: Vec<SettingRow> = sqlx::query_as::<_, SettingRow>(
@@ -71,7 +71,7 @@ pub async fn update(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Upsert setting
@@ -103,11 +103,16 @@ pub async fn update_user(
 
     let user_id = match user_id {
         Some(id) => id,
-        None => return Ok(Json(ApiResponse::success_msg("Not authenticated"))),
+        None => return Err(StatusCode::UNAUTHORIZED),
     };
 
-    // Verify old password if provided
-    if let Some(ref old_password) = req.old_password {
+    // Verify old password (required for any credential change)
+    if req.password.is_some() || req.username.is_some() {
+        let old_password = match req.old_password {
+            Some(ref p) => p,
+            None => return Ok(Json(ApiResponse::error("Current password is required"))),
+        };
+
         let user: Option<(String,)> = sqlx::query_as(
             "SELECT password FROM users WHERE id = ?"
         )
@@ -121,8 +126,10 @@ pub async fn update_user(
 
         if let Some((hash,)) = user {
             if !verify_password(old_password, &hash) {
-                return Ok(Json(ApiResponse::success_msg("Invalid current password")));
+                return Ok(Json(ApiResponse::error("Invalid current password")));
             }
+        } else {
+            return Ok(Json(ApiResponse::error("User not found")));
         }
     }
 
@@ -141,7 +148,7 @@ pub async fn update_user(
 
     // Update password if provided
     if let Some(ref password) = req.password {
-        let hash = hash_password(password);
+        let hash = hash_password(password)?;
         sqlx::query("UPDATE users SET password = ? WHERE id = ?")
             .bind(&hash)
             .bind(user_id)
@@ -165,7 +172,7 @@ pub async fn restart_panel(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // In a real implementation, this would restart the panel
@@ -191,7 +198,7 @@ fn verify_password(password: &str, hash: &str) -> bool {
 }
 
 /// Hash a password
-fn hash_password(password: &str) -> String {
+fn hash_password(password: &str) -> Result<String, StatusCode> {
     use argon2::password_hash::{PasswordHasher, SaltString};
     use argon2::Argon2;
     use rand::rngs::OsRng;
@@ -202,7 +209,10 @@ fn hash_password(password: &str) -> String {
     argon2
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .unwrap_or_else(|_| password.to_string())
+        .map_err(|e| {
+            tracing::error!("Failed to hash password: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 /// Request to update user credentials
@@ -236,7 +246,7 @@ pub async fn list_backups(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let backup_service = state.backup_service.read().await;
@@ -273,7 +283,7 @@ pub async fn create_backup(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let backup_service = state.backup_service.read().await;
@@ -353,7 +363,7 @@ pub async fn delete_backup(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let backup_service = state.backup_service.read().await;
@@ -382,7 +392,7 @@ pub async fn restore_backup(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let backup_service = state.backup_service.read().await;
@@ -448,7 +458,7 @@ pub async fn get_telegram_config(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Get config from settings
@@ -502,7 +512,7 @@ pub async fn update_telegram_config(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Save to settings
@@ -553,14 +563,16 @@ async fn get_setting(db: &sqlx::SqlitePool, key: &str) -> Option<String> {
 
 /// Helper to set a setting value
 async fn set_setting(db: &sqlx::SqlitePool, key: &str, value: &str) {
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "INSERT INTO settings (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     )
     .bind(key)
     .bind(value)
     .execute(db)
-    .await;
+    .await {
+        tracing::error!("Failed to set setting '{}': {}", key, e);
+    }
 }
 
 // ============================================================================
@@ -587,7 +599,7 @@ pub async fn get_ldap_config(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     Ok(Json(ApiResponse::success(LdapConfigResponse {
@@ -621,7 +633,7 @@ pub async fn update_ldap_config(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     set_setting(&state.db, "ldap_enabled", &config.enabled.to_string())
@@ -648,7 +660,7 @@ pub async fn test_ldap(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let config = crate::services::ldap::LdapConfig {

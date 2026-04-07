@@ -124,23 +124,58 @@ impl TrafficResetConfig {
         }
 
         let now = chrono::Utc::now();
+        let hour = (self.reset_hour as u32).min(23);
+
         let next = match self.reset_type {
             1 => { // Daily
-                now.date_naive().and_hms_opt(self.reset_hour as u32, 0, 0).unwrap()
-                    .and_utc()
+                let today_reset = now.date_naive()
+                    .and_hms_opt(hour, 0, 0)
+                    .unwrap_or_else(|| now.naive_utc())
+                    .and_utc();
+                if today_reset <= now {
+                    // Already past today's reset time, advance to tomorrow
+                    today_reset + chrono::Duration::days(1)
+                } else {
+                    today_reset
+                }
             }
             2 => { // Weekly
                 let days_until = (self.reset_day as i64 - now.weekday().num_days_from_sunday() as i64 + 7) % 7;
-                now.date_naive().and_hms_opt(self.reset_hour as u32, 0, 0).unwrap()
-                    .checked_add_days(chrono::Days::new(days_until as u64))
-                    .unwrap()
+                let candidate = now.date_naive()
+                    .and_hms_opt(hour, 0, 0)
+                    .unwrap_or_else(|| now.naive_utc())
                     .and_utc()
+                    + chrono::Duration::days(days_until);
+                if candidate <= now {
+                    // Same day but already past the hour, advance to next week
+                    candidate + chrono::Duration::weeks(1)
+                } else {
+                    candidate
+                }
             }
             3 => { // Monthly
-                let day = self.reset_day_of_month.min(28) as u32;
-                now.date_naive().with_day(day).unwrap()
-                    .and_hms_opt(self.reset_hour as u32, 0, 0).unwrap()
-                    .and_utc()
+                let day = (self.reset_day_of_month as u32).min(28).max(1);
+                let this_month = now.date_naive()
+                    .with_day(day)
+                    .unwrap_or(now.date_naive())
+                    .and_hms_opt(hour, 0, 0)
+                    .unwrap_or_else(|| now.naive_utc())
+                    .and_utc();
+                if this_month <= now {
+                    // Already past this month's reset, advance to next month
+                    let next_month = if now.month() == 12 {
+                        chrono::NaiveDate::from_ymd_opt(now.year() + 1, 1, day)
+                    } else {
+                        chrono::NaiveDate::from_ymd_opt(now.year(), now.month() + 1, day)
+                    };
+                    next_month
+                        .unwrap_or(now.date_naive())
+                        .and_hms_opt(hour, 0, 0)
+                        .unwrap_or_else(|| now.naive_utc())
+                        .and_utc()
+                } else {
+                    this_month
+                }
             }
             _ => return 0,
         };

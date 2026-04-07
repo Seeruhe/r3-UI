@@ -54,7 +54,7 @@ pub async fn list(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let inbounds: Vec<Inbound> = sqlx::query_as::<_, Inbound>(
@@ -86,7 +86,7 @@ pub async fn create(
 
     let user_id = match user_id {
         Some(id) => id,
-        None => return Ok(Json(ApiResponse::success_msg("Not authenticated"))),
+        None => return Err(StatusCode::UNAUTHORIZED),
     };
 
     // Generate tag
@@ -142,7 +142,7 @@ pub async fn update(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Build update query dynamically
@@ -251,7 +251,7 @@ pub async fn delete(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Delete inbound
@@ -265,11 +265,12 @@ pub async fn delete(
         })?;
 
     // Delete associated client traffic records
-    sqlx::query("DELETE FROM client_traffic WHERE inbound_id = ?")
+    if let Err(e) = sqlx::query("DELETE FROM client_traffics WHERE inbound_id = ?")
         .bind(id)
         .execute(&state.db)
-        .await
-        .ok();
+        .await {
+        tracing::error!("Failed to delete client traffic records: {}", e);
+    }
 
     // Regenerate Xray config
     if let Err(e) = regenerate_xray_config(&state).await {
@@ -290,7 +291,7 @@ pub async fn traffic(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let stats: Vec<InboundStats> = sqlx::query_as::<_, InboundStats>(
@@ -385,12 +386,12 @@ pub async fn add_client(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // Insert client into client_traffic table
+    // Insert client into client_traffics table
     sqlx::query(
-        "INSERT INTO client_traffic (
+        "INSERT INTO client_traffics (
             inbound_id, email, up, down, total, enable, expiry_time,
             reset, last_reset_time
         ) VALUES (?, ?, 0, 0, ?, 1, ?, 'never', 0)"
@@ -426,11 +427,11 @@ pub async fn update_client(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     sqlx::query(
-        "UPDATE client_traffic SET email = ?, total = ?, expiry_time = ?, enable = ? WHERE id = ?"
+        "UPDATE client_traffics SET email = ?, total = ?, expiry_time = ?, enable = ? WHERE id = ?"
     )
     .bind(&req.email)
     .bind(req.total)
@@ -458,10 +459,10 @@ pub async fn del_client(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
-    sqlx::query("DELETE FROM client_traffic WHERE id = ? AND inbound_id = ?")
+    sqlx::query("DELETE FROM client_traffics WHERE id = ? AND inbound_id = ?")
         .bind(client_id)
         .bind(id)
         .execute(&state.db)
@@ -489,7 +490,7 @@ pub async fn reset_all_traffic(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     sqlx::query("UPDATE inbounds SET up = 0, down = 0")
@@ -500,10 +501,11 @@ pub async fn reset_all_traffic(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    sqlx::query("UPDATE client_traffic SET up = 0, down = 0")
+    if let Err(e) = sqlx::query("UPDATE client_traffics SET up = 0, down = 0")
         .execute(&state.db)
-        .await
-        .ok();
+        .await {
+        tracing::error!("Failed to reset client traffic: {}", e);
+    }
 
     Ok(Json(ApiResponse::success(())))
 }
@@ -558,7 +560,7 @@ pub async fn reset_client_traffic(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let result = sqlx::query(
@@ -592,7 +594,7 @@ pub async fn del_depleted_clients(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Delete clients where traffic is depleted (up + down >= total) and total > 0
@@ -633,7 +635,7 @@ pub async fn del_expired_clients(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let now = chrono::Utc::now().timestamp();
@@ -676,7 +678,7 @@ pub async fn import_clients(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let mut success_count = 0;
@@ -792,7 +794,7 @@ pub async fn list_clients(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let clients: Vec<ClientInfo> = sqlx::query_as::<_, ClientInfo>(
@@ -833,7 +835,7 @@ pub async fn get_online_clients(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // This would typically require real-time tracking from Xray

@@ -9,7 +9,7 @@ use axum::{
     http::{header, Response, StatusCode},
     body::Body,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tokio::sync::RwLock;
@@ -181,7 +181,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/index.html", get(pages::login_page))
         // Static files - serve assets
         .fallback(serve_static)
-        .layer(CorsLayer::permissive())
+        .layer({
+            use tower_http::cors::{Any, CorsLayer};
+            use axum::http::Method;
+            CorsLayer::new()
+                .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+                .allow_headers(Any)
+                .allow_origin(Any) // TODO: restrict to specific origins in production
+        })
         .layer(TraceLayer::new_for_http())
         .layer(session_layer)
         .with_state(state.clone());
@@ -193,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
     ).parse()?;
 
     tracing::info!("Server listening on http://{}", addr);
-    tracing::info!("Default credentials: admin / admin");
+    tracing::warn!("If this is a fresh install, change the default admin password immediately");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -207,7 +214,7 @@ async fn handle_logout() -> impl IntoResponse {
         .status(StatusCode::FOUND)
         .header(header::LOCATION, "/")
         .body(Body::empty())
-        .unwrap()
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
 /// Serve static files from web/assets
@@ -231,14 +238,13 @@ async fn serve_static(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime)
             .body(Body::from(file.data))
-            .unwrap();
+            .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
     // Fallback to index.html for SPA routing
-    let index = include_str!("../web/html/index.html");
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(index))
-        .unwrap()
+        .body(Body::from(include_bytes!("../web/html/index.html").as_slice()))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }

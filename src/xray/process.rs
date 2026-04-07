@@ -16,6 +16,8 @@ pub struct XrayProcess {
     process: Arc<RwLock<Option<Child>>>,
     running: Arc<AtomicBool>,
     pid: Arc<AtomicU32>,
+    /// Mutex to prevent concurrent start/stop operations
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl XrayProcess {
@@ -26,10 +28,13 @@ impl XrayProcess {
             process: Arc::new(RwLock::new(None)),
             running: Arc::new(AtomicBool::new(false)),
             pid: Arc::new(AtomicU32::new(0)),
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     pub async fn start(&self) -> anyhow::Result<()> {
+        let _lock = self.lifecycle.lock().await;
+
         if self.running.load(Ordering::SeqCst) {
             tracing::warn!("Xray process is already running");
             return Ok(());
@@ -48,14 +53,22 @@ impl XrayProcess {
         self.pid.store(pid, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
 
-        // Spawn task to capture stdout
+        // Spawn task to capture stdout and detect process exit
+        let running = self.running.clone();
+        let pid_flag = self.pid.clone();
         if let Some(stdout) = child.stdout.take() {
+            let running = running.clone();
+            let pid_flag = pid_flag.clone();
             tokio::spawn(async move {
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!("[xray stdout] {}", line);
                 }
+                // stdout closed means process exited
+                running.store(false, Ordering::SeqCst);
+                pid_flag.store(0, Ordering::SeqCst);
+                tracing::warn!("Xray process exited (detected via stdout close)");
             });
         }
 
@@ -77,6 +90,8 @@ impl XrayProcess {
     }
 
     pub async fn stop(&self) -> anyhow::Result<()> {
+        let _lock = self.lifecycle.lock().await;
+
         if !self.running.load(Ordering::SeqCst) {
             return Ok(());
         }

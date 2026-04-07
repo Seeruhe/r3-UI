@@ -18,6 +18,7 @@ pub struct Assets;
 
 /// Template service for rendering HTML pages
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct TemplateService {
     tera: Arc<RwLock<Tera>>,
     i18n: I18n,

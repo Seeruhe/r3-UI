@@ -22,7 +22,7 @@ pub async fn status(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let status = state.xray.status().await;
@@ -40,12 +40,12 @@ pub async fn restart(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if let Err(e) = state.xray.restart().await {
         tracing::error!("Failed to restart Xray: {}", e);
-        return Ok(Json(ApiResponse::success_msg("Failed to restart Xray")));
+        return Ok(Json(ApiResponse::error("Failed to restart Xray")));
     }
 
     Ok(Json(ApiResponse::success(())))
@@ -61,12 +61,12 @@ pub async fn stop(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if let Err(e) = state.xray.stop().await {
         tracing::error!("Failed to stop Xray: {}", e);
-        return Ok(Json(ApiResponse::success_msg("Failed to stop Xray")));
+        return Ok(Json(ApiResponse::error("Failed to stop Xray")));
     }
 
     Ok(Json(ApiResponse::success(())))
@@ -83,7 +83,7 @@ pub async fn logs(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let logs = state.xray.get_logs().await.unwrap_or_default();
@@ -101,7 +101,7 @@ pub async fn logs_count(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let logs = state.xray.get_logs_count(count).await.unwrap_or_default();
@@ -119,7 +119,7 @@ pub async fn xray_logs_count(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let logs = state.xray.get_xray_logs(count).await.unwrap_or_default();
@@ -136,7 +136,7 @@ pub async fn get_version(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let version = state.xray.get_version().await.unwrap_or_else(|_| "Unknown".to_string());
@@ -188,12 +188,12 @@ pub async fn update_config(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if let Err(e) = state.xray.update_config(config).await {
         tracing::error!("Failed to update Xray config: {}", e);
-        return Ok(Json(ApiResponse::success_msg("Failed to update config")));
+        return Ok(Json(ApiResponse::error("Failed to update config")));
     }
 
     Ok(Json(ApiResponse::success(())))
@@ -246,7 +246,7 @@ pub async fn get_available_versions(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     match state.xray.get_available_versions().await {
@@ -269,7 +269,7 @@ pub async fn install_version(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Ensure version starts with 'v'
@@ -303,7 +303,7 @@ pub async fn get_installed_version(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     let version = state.xray.get_installed_version().await.unwrap_or_else(|| "Unknown".to_string());
@@ -329,12 +329,12 @@ pub async fn start(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if user_id.is_none() {
-        return Ok(Json(ApiResponse::success_msg("Not authenticated")));
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if let Err(e) = state.xray.start().await {
         tracing::error!("Failed to start Xray: {}", e);
-        return Ok(Json(ApiResponse::success_msg("Failed to start Xray")));
+        return Ok(Json(ApiResponse::error("Failed to start Xray")));
     }
 
     Ok(Json(ApiResponse::success(())))

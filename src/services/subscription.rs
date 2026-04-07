@@ -280,7 +280,8 @@ impl SubscriptionService {
         yaml.push_str("    type: select\n");
         yaml.push_str("    proxies:\n");
         for config in configs {
-            yaml.push_str(&format!("      - \"{}\"\n", config.remark));
+            let escaped = config.remark.replace('\\', "\\\\").replace('"', "\\\"");
+            yaml.push_str(&format!("      - \"{}\"\n", escaped));
         }
 
         yaml.push_str("\nrules:\n");
@@ -419,7 +420,7 @@ impl SubscriptionService {
     /// Generate subscription info page HTML
     pub fn generate_info_page(config: &ClientConfig, host: &str) -> String {
         let usage_percent = if config.total > 0 {
-            ((config.upload + config.download) as f64 / config.total as f64 * 100.0) as i32
+            (((config.upload.saturating_add(config.download)) as f64 / config.total as f64 * 100.0) as i32).min(100)
         } else {
             0
         };

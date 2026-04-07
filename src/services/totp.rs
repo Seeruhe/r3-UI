@@ -95,7 +95,10 @@ pub fn verify_totp(secret: &str, code: &str) -> bool {
 
     // Check current, previous, and next period (allow time drift)
     for offset in [-1i64, 0, 1] {
-        let time = (current_time as i64 + (offset * TOTP_PERIOD as i64)) as u64;
+        let time = match (current_time as i64).checked_add(offset * TOTP_PERIOD as i64) {
+            Some(t) if t >= 0 => t as u64,
+            _ => continue, // Skip if underflow
+        };
         let expected = totp_custom::<Sha1>(TOTP_PERIOD, TOTP_DIGITS, &secret_bytes, time);
         if expected == code {
             return true;
@@ -146,7 +149,7 @@ pub fn generate_qr_code_data_uri(otpauth_url: &str) -> Result<String> {
 fn current_timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
 }
 

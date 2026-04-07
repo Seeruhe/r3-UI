@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 /// Translation entry in TOML format
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct TranslationValue {
     #[serde(flatten)]
     values: HashMap<String, toml::Value>,
@@ -151,9 +152,23 @@ impl I18n {
     }
 
     /// Get a translation synchronously (for template rendering)
-    pub fn t_sync(&self, key: &str, _lang: &str) -> String {
-        // This is a synchronous version that requires pre-loaded translations
-        // Used in template rendering where we can't use async
+    /// Uses try_read to avoid blocking; falls back to key if lock is held
+    pub fn t_sync(&self, key: &str, lang: &str) -> String {
+        if let Ok(translations) = self.translations.try_read() {
+            // Try requested language first
+            if let Some(lang_map) = translations.get(lang) {
+                if let Some(value) = lang_map.get(key) {
+                    return value.clone();
+                }
+            }
+            // Fallback to default language
+            if let Some(lang_map) = translations.get(&self.default_lang) {
+                if let Some(value) = lang_map.get(key) {
+                    return value.clone();
+                }
+            }
+        }
+        // Return key if not found or lock unavailable
         key.to_string()
     }
 
@@ -200,17 +215,12 @@ pub struct LanguageInfo {
     pub icon: String,
 }
 
-/// Global i18n instance
-static mut I18N_INSTANCE: Option<I18n> = None;
+/// Global i18n instance (thread-safe)
+static I18N_INSTANCE: std::sync::OnceLock<I18n> = std::sync::OnceLock::new();
 
 /// Get or create the global i18n instance
 pub fn get_i18n() -> I18n {
-    unsafe {
-        if I18N_INSTANCE.is_none() {
-            I18N_INSTANCE = Some(I18n::new());
-        }
-        I18N_INSTANCE.clone().unwrap()
-    }
+    I18N_INSTANCE.get_or_init(I18n::new).clone()
 }
 
 /// Initialize the global i18n instance

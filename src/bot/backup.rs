@@ -122,7 +122,7 @@ impl BackupService {
 
         // Send to Telegram if configured
         if config.send_to_telegram {
-            if let Some(bot) = self.bot.write().await.as_ref() {
+            if let Some(bot) = self.bot.read().await.as_ref() {
                 let _ = bot.send_message(&format!(
                     "💾 Backup created: {}\nSize: {} bytes",
                     backup_info.filename,
@@ -224,6 +224,11 @@ impl BackupService {
 
     /// Delete a specific backup
     pub async fn delete_backup(&self, filename: &str) -> Result<()> {
+        // Validate filename to prevent path traversal
+        if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+            return Err(anyhow!("Invalid backup filename"));
+        }
+
         let config = self.config.read().await;
         let backup_path = config.backup_path.join(filename);
 
@@ -240,6 +245,11 @@ impl BackupService {
 
     /// Get backup file path for downloading
     pub async fn get_backup_path(&self, filename: &str) -> Result<PathBuf> {
+        // Validate filename to prevent path traversal
+        if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+            return Err(anyhow!("Invalid backup filename"));
+        }
+
         let config = self.config.read().await;
         let path = config.backup_path.join(filename);
 
@@ -291,6 +301,7 @@ impl BackupService {
 }
 
 /// Format file size to human readable string
+#[allow(dead_code)]
 fn format_size(size: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;

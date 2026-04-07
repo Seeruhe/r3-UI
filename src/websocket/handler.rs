@@ -53,6 +53,11 @@ async fn handle_socket(socket: WebSocket, mut receiver: Receiver<String>, ws_hub
                     Some(Ok(Message::Ping(data))) => {
                         let _ = sender.send(Message::Pong(data)).await;
                     }
+                    Some(Err(e)) => {
+                        tracing::debug!("WebSocket receive error: {}", e);
+                        ws_hub.client_disconnected();
+                        break;
+                    }
                     _ => {}
                 }
             }

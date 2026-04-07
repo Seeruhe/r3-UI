@@ -73,10 +73,10 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    // Create client_traffic table
+    // Create client_traffics table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS client_traffic (
+        CREATE TABLE IF NOT EXISTS client_traffics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             inbound_id INTEGER NOT NULL,
             email TEXT NOT NULL,
@@ -85,6 +85,14 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             total INTEGER DEFAULT 0,
             expiry_time INTEGER DEFAULT 0,
             enable INTEGER DEFAULT 1,
+            limit_ip INTEGER DEFAULT 0,
+            tg_id INTEGER DEFAULT 0,
+            sub_id TEXT DEFAULT '',
+            comment TEXT DEFAULT '',
+            reset INTEGER DEFAULT 0,
+            last_reset_time INTEGER DEFAULT 0,
+            created_at INTEGER DEFAULT 0,
+            updated_at INTEGER DEFAULT 0,
             FOREIGN KEY (inbound_id) REFERENCES inbounds(id)
         )
         "#,
@@ -108,7 +116,7 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             .bind(now)
             .execute(pool)
             .await?;
-        tracing::info!("Created default admin user (password: admin)");
+        tracing::info!("Created default admin user - please change the default password immediately");
     }
 
     // Add missing columns to existing users table (migration for existing databases)

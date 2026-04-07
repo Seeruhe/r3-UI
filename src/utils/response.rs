@@ -25,26 +25,19 @@ impl<T> ApiResponse<T> {
     }
 
     /// Create a successful response with a message but no data
-    /// This is used when we need to return early with a message
-    pub fn success_msg(message: &str) -> Self
-    where
-        T: Default,
-    {
+    pub fn success_msg(message: &str) -> Self {
         Self {
             success: true,
-            data: Some(T::default()),
+            data: None,
             message: Some(message.to_string()),
         }
     }
 
     /// Create an error response with a message
-    pub fn error(message: &str) -> Self
-    where
-        T: Default,
-    {
+    pub fn error(message: &str) -> Self {
         Self {
             success: false,
-            data: Some(T::default()),
+            data: None,
             message: Some(message.to_string()),
         }
     }

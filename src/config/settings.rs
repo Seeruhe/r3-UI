@@ -61,7 +61,10 @@ impl Settings {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:data.db?mode=rwc".to_string()),
             session_secret: env::var("SESSION_SECRET")
-                .unwrap_or_else(|_| "default-secret-key-change-me".to_string()),
+                .unwrap_or_else(|_| {
+                    tracing::warn!("SESSION_SECRET not set - using insecure default. Set SESSION_SECRET in production!");
+                    "default-secret-key-change-me".to_string()
+                }),
             web_root: PathBuf::from(
                 env::var("WEB_ROOT")
                     .unwrap_or_else(|_| "./web/html".to_string())
@@ -109,7 +112,10 @@ impl Settings {
             sub_path: env::var("SUB_PATH")
                 .unwrap_or_else(|_| "sub".to_string()),
             sub_encryption_key: env::var("SUB_ENCRYPTION_KEY")
-                .unwrap_or_else(|_| "default-encryption-key".to_string()),
+                .unwrap_or_else(|_| {
+                    tracing::warn!("SUB_ENCRYPTION_KEY not set - using insecure default. Set SUB_ENCRYPTION_KEY in production!");
+                    "default-encryption-key".to_string()
+                }),
 
             // Backup settings
             backup_path: PathBuf::from(

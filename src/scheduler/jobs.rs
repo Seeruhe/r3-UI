@@ -50,7 +50,10 @@ impl Scheduler {
                     .await
                     {
                         Ok(i) => i,
-                        Err(_) => return,
+                        Err(e) => {
+                            tracing::error!("Failed to fetch inbound traffic: {}", e);
+                            return;
+                        }
                     };
 
                     // Broadcast traffic stats
@@ -91,68 +94,77 @@ impl Scheduler {
 
                 // Daily reset (24 hours)
                 let day_ago = now - 86400;
-                sqlx::query(
+                if let Err(e) = sqlx::query(
                     "UPDATE inbounds SET up = 0, down = 0, last_traffic_reset_time = ?
                      WHERE traffic_reset = '1' AND last_traffic_reset_time < ?"
                 )
                 .bind(now)
                 .bind(day_ago)
                 .execute(&db)
-                .await
-                .ok();
+                .await {
+                    tracing::error!("Failed to reset daily inbound traffic: {}", e);
+                }
 
                 // Weekly reset (7 days)
                 let week_ago = now - 604800;
-                sqlx::query(
+                if let Err(e) = sqlx::query(
                     "UPDATE inbounds SET up = 0, down = 0, last_traffic_reset_time = ?
                      WHERE traffic_reset = '2' AND last_traffic_reset_time < ?"
                 )
                 .bind(now)
                 .bind(week_ago)
                 .execute(&db)
-                .await
-                .ok();
+                .await {
+                    tracing::error!("Failed to reset weekly inbound traffic: {}", e);
+                }
 
                 // Monthly reset (30 days)
                 let month_ago = now - 2592000;
-                sqlx::query(
+                if let Err(e) = sqlx::query(
                     "UPDATE inbounds SET up = 0, down = 0, last_traffic_reset_time = ?
                      WHERE traffic_reset = '3' AND last_traffic_reset_time < ?"
                 )
                 .bind(now)
                 .bind(month_ago)
                 .execute(&db)
-                .await
-                .ok();
+                .await {
+                    tracing::error!("Failed to reset monthly inbound traffic: {}", e);
+                }
 
                 // Reset client traffic
                 // Client reset: 0=never, 1=daily, 2=weekly, 3=monthly
-                sqlx::query(
-                    "UPDATE client_traffics SET up = 0, down = 0
+                if let Err(e) = sqlx::query(
+                    "UPDATE client_traffics SET up = 0, down = 0, updated_at = ?
                      WHERE reset = 1 AND updated_at < ?"
                 )
+                .bind(now)
                 .bind(day_ago)
                 .execute(&db)
-                .await
-                .ok();
+                .await {
+                    tracing::error!("Failed to reset daily client traffic: {}", e);
+                }
 
-                sqlx::query(
-                    "UPDATE client_traffics SET up = 0, down = 0
+                if let Err(e) = sqlx::query(
+                    "UPDATE client_traffics SET up = 0, down = 0, updated_at = ?
                      WHERE reset = 2 AND updated_at < ?"
                 )
+                .bind(now)
                 .bind(week_ago)
                 .execute(&db)
-                .await
-                .ok();
+                .await {
+                    tracing::error!("Failed to reset weekly client traffic: {}", e);
+                }
 
-                sqlx::query(
-                    "UPDATE client_traffics SET up = 0, down = 0
+                if let Err(e) = sqlx::query(
+                    "UPDATE client_traffics SET up = 0, down = 0, updated_at = ?
                      WHERE reset = 3 AND updated_at < ?"
                 )
+                .bind(now)
                 .bind(month_ago)
                 .execute(&db)
-                .await
-                .ok();
+                .await {
+                    tracing::error!("Failed to reset monthly client traffic: {}", e);
+                }
 
                 tracing::info!("Traffic reset job completed");
             });
@@ -326,9 +338,9 @@ impl Scheduler {
         backup_service: Arc<crate::bot::backup::BackupService>,
     ) -> anyhow::Result<()> {
         // Run daily at 3 AM
+        let _db = db; // not needed for file-based backup
         let job = Job::new("0 0 3 * * *", move |_uuid, _l| {
             let backup_service = backup_service.clone();
-            let _db = db.clone();
 
             tokio::spawn(async move {
                 match backup_service.create_backup().await {

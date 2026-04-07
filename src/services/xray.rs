@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -65,8 +66,12 @@ pub struct XrayManager {
     process: Arc<RwLock<Option<Child>>>,
     running: Arc<AtomicBool>,
     pid: Arc<AtomicU32>,
-    logs: Arc<RwLock<Vec<String>>>,
+    logs: Arc<RwLock<VecDeque<String>>>,
     start_time: Arc<RwLock<Option<std::time::Instant>>>,
+    /// Cached version string, updated on start
+    cached_version: Arc<RwLock<Option<String>>>,
+    /// Mutex to prevent concurrent start/stop operations
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl XrayManager {
@@ -82,8 +87,10 @@ impl XrayManager {
             process: Arc::new(RwLock::new(None)),
             running: Arc::new(AtomicBool::new(false)),
             pid: Arc::new(AtomicU32::new(0)),
-            logs: Arc::new(RwLock::new(Vec::new())),
+            logs: Arc::new(RwLock::new(VecDeque::new())),
             start_time: Arc::new(RwLock::new(None)),
+            cached_version: Arc::new(RwLock::new(None)),
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -96,12 +103,16 @@ impl XrayManager {
             process: Arc::new(RwLock::new(None)),
             running: Arc::new(AtomicBool::new(false)),
             pid: Arc::new(AtomicU32::new(0)),
-            logs: Arc::new(RwLock::new(Vec::new())),
+            logs: Arc::new(RwLock::new(VecDeque::new())),
             start_time: Arc::new(RwLock::new(None)),
+            cached_version: Arc::new(RwLock::new(None)),
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     pub async fn start(&self) -> anyhow::Result<()> {
+        let _lock = self.lifecycle.lock().await;
+
         if self.running.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -120,19 +131,32 @@ impl XrayManager {
         self.running.store(true, Ordering::SeqCst);
         *self.start_time.write().await = Some(std::time::Instant::now());
 
+        // Cache version on start
+        if let Ok(ver) = self.get_version_internal().await {
+            *self.cached_version.write().await = Some(ver);
+        }
+
         // Spawn task to capture stdout
         let logs = self.logs.clone();
+        let running = self.running.clone();
+        let pid_flag = self.pid.clone();
         if let Some(stdout) = child.stdout.take() {
+            let running = running.clone();
+            let pid_flag = pid_flag.clone();
             tokio::spawn(async move {
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    logs.write().await.push(line);
-                    // Keep only last 1000 lines
-                    if logs.read().await.len() > 1000 {
-                        logs.write().await.remove(0);
+                    let mut log_buf = logs.write().await;
+                    log_buf.push_back(line);
+                    if log_buf.len() > 1000 {
+                        log_buf.pop_front();
                     }
                 }
+                // stdout closed means process exited
+                running.store(false, Ordering::SeqCst);
+                pid_flag.store(0, Ordering::SeqCst);
+                tracing::warn!("Xray process exited (detected via stdout close)");
             });
         }
 
@@ -143,7 +167,11 @@ impl XrayManager {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    logs.write().await.push(format!("[ERROR] {}", line));
+                    let mut log_buf = logs.write().await;
+                    log_buf.push_back(format!("[ERROR] {}", line));
+                    if log_buf.len() > 1000 {
+                        log_buf.pop_front();
+                    }
                 }
             });
         }
@@ -155,6 +183,8 @@ impl XrayManager {
     }
 
     pub async fn stop(&self) -> anyhow::Result<()> {
+        let _lock = self.lifecycle.lock().await;
+
         if !self.running.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -191,7 +221,7 @@ impl XrayManager {
         };
 
         let version = if running {
-            self.get_version().await.ok()
+            self.cached_version.read().await.clone()
         } else {
             None
         };
@@ -225,21 +255,21 @@ impl XrayManager {
     }
 
     pub async fn get_logs(&self) -> anyhow::Result<Vec<String>> {
-        Ok(self.logs.read().await.clone())
+        Ok(self.logs.read().await.iter().cloned().collect())
     }
 
     /// Get logs with count limit
     pub async fn get_logs_count(&self, count: usize) -> anyhow::Result<Vec<String>> {
         let logs = self.logs.read().await;
         let start = if logs.len() > count { logs.len() - count } else { 0 };
-        Ok(logs[start..].to_vec())
+        Ok(logs.iter().skip(start).cloned().collect())
     }
 
     /// Get Xray internal logs (from process output)
     pub async fn get_xray_logs(&self, count: usize) -> anyhow::Result<Vec<String>> {
         let logs = self.logs.read().await;
         let start = if logs.len() > count { logs.len() - count } else { 0 };
-        Ok(logs[start..].to_vec())
+        Ok(logs.iter().skip(start).cloned().collect())
     }
 
     /// Get current Xray config
@@ -413,30 +443,37 @@ impl XrayManager {
         Ok(())
     }
 
-    /// Extract a zip file
+    /// Extract a zip file (runs blocking I/O in a dedicated thread)
     async fn extract_zip(&self, zip_path: &PathBuf, dest_dir: &PathBuf) -> anyhow::Result<()> {
-        let file = std::fs::File::open(zip_path)?;
-        let mut archive = zip::ZipArchive::new(file)?;
+        let zip_path = zip_path.clone();
+        let dest_dir = dest_dir.clone();
 
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let outpath = match file.enclosed_name() {
-                Some(path) => dest_dir.join(path),
-                None => continue,
-            };
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let file = std::fs::File::open(&zip_path)?;
+            let mut archive = zip::ZipArchive::new(file)?;
 
-            if file.name().ends_with('/') {
-                tokio::fs::create_dir_all(&outpath).await?;
-            } else {
-                if let Some(p) = outpath.parent() {
-                    if !p.exists() {
-                        tokio::fs::create_dir_all(p).await?;
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)?;
+                let outpath = match file.enclosed_name() {
+                    Some(path) => dest_dir.join(path),
+                    None => continue,
+                };
+
+                if file.name().ends_with('/') {
+                    std::fs::create_dir_all(&outpath)?;
+                } else {
+                    if let Some(p) = outpath.parent() {
+                        if !p.exists() {
+                            std::fs::create_dir_all(p)?;
+                        }
                     }
+                    let mut outfile = std::fs::File::create(&outpath)?;
+                    std::io::copy(&mut file, &mut outfile)?;
                 }
-                let mut outfile = std::fs::File::create(&outpath)?;
-                std::io::copy(&mut file, &mut outfile)?;
             }
-        }
+
+            Ok(())
+        }).await??;
 
         Ok(())
     }

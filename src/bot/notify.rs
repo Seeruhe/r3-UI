@@ -92,7 +92,11 @@ impl NotificationService {
         total: i64,
         inbound_tag: &str,
     ) -> Result<()> {
-        let percentage = (used as f64 / total as f64 * 100.0) as i32;
+        let percentage = if total > 0 {
+            (used as f64 / total as f64 * 100.0) as i32
+        } else {
+            0
+        };
         let notification = Notification {
             notification_type: NotificationType::TrafficLimit,
             title: "Traffic Limit Alert".to_string(),
@@ -315,6 +319,10 @@ fn notification_type_emoji(notification_type: &NotificationType) -> &'static str
 
 /// Format bytes to human readable string
 fn format_bytes(bytes: i64) -> String {
+    if bytes < 0 {
+        return "0 B".to_string();
+    }
+
     const KB: i64 = 1024;
     const MB: i64 = KB * 1024;
     const GB: i64 = MB * 1024;
